@@ -1,0 +1,85 @@
+{
+  "notify": {
+    "close_failed": "Could not close the window",
+    "focus_failed": "Could not focus the window",
+    "maximize_failed": "Could not toggle maximize"
+  },
+  "settings": {
+    "active_fill": {
+      "description": "Background of the focused window's tab.",
+      "label": "Active tab colour"
+    },
+    "active_text": {
+      "description": "Icon and label colour on the focused tab. Pair this with the active tab colour so the text stays readable.",
+      "label": "Active tab text"
+    },
+    "char_advance": {
+      "description": "Average character width as a fraction of the font size, used to convert the character limits below into a pixel budget. Raise it if labels look cramped, lower it if the strip stops short of the width you allowed.",
+      "label": "Character width estimate"
+    },
+    "enable_close": {
+      "description": "Show a close button on the tab. Middle-clicking a tab closes it regardless of this setting.",
+      "label": "Close button"
+    },
+    "enable_maximize": {
+      "description": "Show a maximize toggle on the tab.",
+      "label": "Maximize button"
+    },
+    "font_size": {
+      "description": "Font size of the tab labels.",
+      "label": "Label size"
+    },
+    "hide_when_empty": {
+      "description": "Take no room on the bar when the focused workspace has no windows.",
+      "label": "Hide when empty"
+    },
+    "icon_size": {
+      "description": "Size of the application icon on each tab. Set to 0 to hide icons and show labels only.",
+      "label": "Icon size"
+    },
+    "inactive_fill": {
+      "description": "Background of every other tab.",
+      "label": "Inactive tab colour"
+    },
+    "inactive_text": {
+      "description": "Icon and label colour on unfocused tabs.",
+      "label": "Inactive tab text"
+    },
+    "max_title_chars": {
+      "description": "Longest a tab label ever gets, even when there is room to spare.",
+      "label": "Maximum title length"
+    },
+    "max_total_width": {
+      "description": "Pixels the whole tab strip may occupy. Labels shrink to fit, then tabs drop to icons only, then the surplus collapses into a +N chip.",
+      "label": "Maximum strip width"
+    },
+    "min_title_chars": {
+      "description": "Shortest a label may shrink to before tabs give up labels entirely and go icon-only.",
+      "label": "Minimum title length"
+    },
+    "show_controls": {
+      "always": "Always visible",
+      "description": "When to show the maximize and close buttons on a tab. Their space is reserved either way, so the strip never shifts under the cursor.",
+      "hover": "On hover",
+      "label": "Window controls",
+      "off": "Never"
+    },
+    "tab_gap": {
+      "description": "Space between tabs.",
+      "label": "Tab spacing"
+    },
+    "tab_padding": {
+      "description": "Horizontal padding inside each tab.",
+      "label": "Tab padding"
+    },
+    "tab_radius": {
+      "description": "Corner radius of each tab.",
+      "label": "Tab radius"
+    }
+  },
+  "tooltip": {
+    "app": "App",
+    "title": "Title",
+    "untitled": "Untitled"
+  }
+}

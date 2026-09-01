@@ -1,0 +1,180 @@
+# Workspace Tabs - browser-style tabs for the windows on the focused workspace.
+#
+# The Noctalia plugin API exposes no compositor introspection, so every window
+# fact here comes from Hyprland directly: `hyprctl -j clients` snapshots plus the
+# `.socket2.sock` event stream. One [[service]] owns that I/O and publishes a
+# snapshot on the plugin state channel; the [[widget]] is pure presentation, so N
+# bars on N outputs still cost exactly one poller.
+#
+# service -> hyprctl + socat, snapshot on "tabs", actions from "request"
+# widget  -> the tab strip: icon + title, hover-revealed maximize/close
+
+id           = "awsumatt/workspace-tabs"
+name         = "Workspace Tabs"
+version      = "1.0.0"
+plugin_api   = 28
+author       = "awsumatt"
+license      = "MIT"
+icon         = "browser"
+description  = "Browser-style tabs for every window on the focused Hyprland workspace, with click-to-focus and hover-revealed maximize and close controls."
+tags         = ["hyprland", "bar", "taskbar", "windows", "workspace"]
+dependencies = ["socat"]
+
+[[service]]
+id    = "tabs-state"
+entry = "service.luau"
+
+[[widget]]
+id    = "tabs"
+entry = "widget.luau"
+
+  # Every widget ships a built-in `middle = "settings-open-widget"`, which
+  # swallows onMiddleClick. Releasing the button is what lets middle-click close
+  # the hovered tab; users can still rebind it per instance.
+  [widget.actions]
+  middle = "none"
+
+  [[widget.setting]]
+  key             = "max_total_width"
+  type            = "int"
+  label_key       = "settings.max_total_width.label"
+  description_key = "settings.max_total_width.description"
+  default         = 600
+  min             = 80
+  max             = 4000
+
+  [[widget.setting]]
+  key             = "max_title_chars"
+  type            = "int"
+  label_key       = "settings.max_title_chars.label"
+  description_key = "settings.max_title_chars.description"
+  default         = 24
+  min             = 1
+  max             = 128
+
+  [[widget.setting]]
+  key             = "min_title_chars"
+  type            = "int"
+  label_key       = "settings.min_title_chars.label"
+  description_key = "settings.min_title_chars.description"
+  default         = 6
+  min             = 1
+  max             = 64
+
+  [[widget.setting]]
+  key             = "char_advance"
+  type            = "double"
+  label_key       = "settings.char_advance.label"
+  description_key = "settings.char_advance.description"
+  default         = 0.55
+  min             = 0.3
+  max             = 1.2
+  step            = 0.01
+
+  [[widget.setting]]
+  key             = "icon_size"
+  type            = "int"
+  label_key       = "settings.icon_size.label"
+  description_key = "settings.icon_size.description"
+  default         = 16
+  min             = 0
+  max             = 32
+
+  [[widget.setting]]
+  key             = "font_size"
+  type            = "int"
+  label_key       = "settings.font_size.label"
+  description_key = "settings.font_size.description"
+  default         = 11
+  min             = 6
+  max             = 24
+
+  [[widget.setting]]
+  key             = "show_controls"
+  type            = "select"
+  label_key       = "settings.show_controls.label"
+  description_key = "settings.show_controls.description"
+  default         = "hover"
+  options = [
+    { value = "hover", label_key = "settings.show_controls.hover" },
+    { value = "always", label_key = "settings.show_controls.always" },
+    { value = "off", label_key = "settings.show_controls.off" },
+  ]
+
+  [[widget.setting]]
+  key             = "enable_maximize"
+  type            = "bool"
+  label_key       = "settings.enable_maximize.label"
+  description_key = "settings.enable_maximize.description"
+  default         = true
+  visible_when    = { key = "show_controls", values = ["hover", "always"] }
+
+  [[widget.setting]]
+  key             = "enable_close"
+  type            = "bool"
+  label_key       = "settings.enable_close.label"
+  description_key = "settings.enable_close.description"
+  default         = true
+  visible_when    = { key = "show_controls", values = ["hover", "always"] }
+
+  [[widget.setting]]
+  key             = "tab_radius"
+  type            = "int"
+  label_key       = "settings.tab_radius.label"
+  description_key = "settings.tab_radius.description"
+  default         = 8
+  min             = 0
+  max             = 32
+
+  [[widget.setting]]
+  key             = "tab_padding"
+  type            = "int"
+  label_key       = "settings.tab_padding.label"
+  description_key = "settings.tab_padding.description"
+  default         = 6
+  min             = 0
+  max             = 24
+
+  [[widget.setting]]
+  key             = "tab_gap"
+  type            = "int"
+  label_key       = "settings.tab_gap.label"
+  description_key = "settings.tab_gap.description"
+  default         = 4
+  min             = 0
+  max             = 24
+
+  [[widget.setting]]
+  key             = "active_fill"
+  type            = "color"
+  label_key       = "settings.active_fill.label"
+  description_key = "settings.active_fill.description"
+  default         = "primary"
+
+  [[widget.setting]]
+  key             = "active_text"
+  type            = "color"
+  label_key       = "settings.active_text.label"
+  description_key = "settings.active_text.description"
+  default         = "on_primary"
+
+  [[widget.setting]]
+  key             = "inactive_fill"
+  type            = "color"
+  label_key       = "settings.inactive_fill.label"
+  description_key = "settings.inactive_fill.description"
+  default         = "surface_variant"
+
+  [[widget.setting]]
+  key             = "inactive_text"
+  type            = "color"
+  label_key       = "settings.inactive_text.label"
+  description_key = "settings.inactive_text.description"
+  default         = "on_surface"
+
+  [[widget.setting]]
+  key             = "hide_when_empty"
+  type            = "bool"
+  label_key       = "settings.hide_when_empty.label"
+  description_key = "settings.hide_when_empty.description"
+  default         = true
