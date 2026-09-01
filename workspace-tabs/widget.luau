@@ -27,7 +27,11 @@ local ELLIPSIS = "…"
 
 -- The bar clips a widget to its thickness, so a tab is one control tall.
 local ICON_GAP = 4
-local CONTROL_BUTTON_PAD = 10
+-- Control buttons are drawn as fixed-width boxes rather than ui.button on
+-- purpose: a button sizes itself, and a control of unknown width would put the
+-- one unmeasurable term back into the budget below. A box takes the width it is
+-- given, which keeps the whole tab exactly predictable.
+local CONTROL_BUTTON_PAD = 8
 
 local state = noctalia.state.get(STATE_KEY) or { available = false, tabs = {} }
 local iconCache = {}
@@ -35,7 +39,30 @@ local hoveredAddress = nil
 local requestNonce = 0
 local renderedVertical = nil
 
+
 local cfg = {}
+
+-- A tab is a capsule, and it should be the same capsule as the clock or the
+-- tray next to it. The bar expresses that as `capsule_thickness`, a fraction of
+-- its own thickness, so the two settings together give the exact pixel height
+-- the built-in capsules use. There is no API for "which bar am I on", so this
+-- reads the first bar in the order - exact for a single-bar setup, and
+-- overridable with the tab_height setting when it is not.
+local function resolveTabHeight()
+  local configured = math.max(0, tonumber(noctalia.getConfig("tab_height")) or 0)
+  if configured > 0 then
+    return configured
+  end
+
+  local order = noctalia.getSetting("bar.order")
+  local name = (type(order) == "table" and type(order[1]) == "string") and order[1] or "default"
+  local thickness = tonumber(noctalia.getSetting(`bar.{name}.thickness`))
+  local ratio = tonumber(noctalia.getSetting(`bar.{name}.capsule_thickness`))
+  if thickness == nil then
+    return 0
+  end
+  return thickness * (ratio or 1.0)
+end
 
 local function readConfig()
   cfg.maxTotalWidth = math.max(80, tonumber(noctalia.getConfig("max_total_width")) or 600)
@@ -47,6 +74,7 @@ local function readConfig()
   cfg.showControls = noctalia.getConfig("show_controls") or "hover"
   cfg.enableMaximize = noctalia.getConfig("enable_maximize") == true
   cfg.enableClose = noctalia.getConfig("enable_close") == true
+  cfg.tabHeight = math.max(0, tonumber(noctalia.getConfig("tab_height")) or 0)
   cfg.tabRadius = math.max(0, tonumber(noctalia.getConfig("tab_radius")) or 8)
   cfg.tabPadding = math.max(0, tonumber(noctalia.getConfig("tab_padding")) or 6)
   cfg.tabGap = math.max(0, tonumber(noctalia.getConfig("tab_gap")) or 4)
@@ -59,6 +87,8 @@ local function readConfig()
   if cfg.minTitleChars > cfg.maxTitleChars then
     cfg.minTitleChars = cfg.maxTitleChars
   end
+
+  cfg.resolvedHeight = resolveTabHeight()
 end
 
 readConfig()
@@ -88,11 +118,7 @@ local function controlButtonWidth()
 end
 
 local function controlSlotWidth()
-  local count = controlCount()
-  if count == 0 then
-    return 0
-  end
-  return count * controlButtonWidth() + ICON_GAP
+  return controlCount() * controlButtonWidth()
 end
 
 -- Truncate to a character cap while keeping the visible length at `chars`, so
@@ -140,10 +166,43 @@ end
 --
 -- Fixed cost of one tab, i.e. everything that is not the label.
 
-local function tabFixedWidth(withIcon)
-  local width = cfg.tabPadding * 2 + controlSlotWidth()
+-- Everything in a tab except the label. Children are laid out with ICON_GAP
+-- between them, so the gaps are part of the cost and are counted here rather
+-- than being quietly absorbed - that omission is exactly what made the first
+-- version overflow its budget.
+-- Space the controls need *inside* the label slot. Controls only hide behind a
+-- title, so an icon-only tab reserves nothing and simply has no controls.
+local function controlReserve(hasLabel)
+  if not hasLabel then
+    return 0
+  end
+  local slot = controlSlotWidth()
+  if slot == 0 then
+    return 0
+  end
+  return slot + ICON_GAP
+end
+
+local function tabFixedWidth(withIcon, withLabel)
+  local parts = 0
+  local width = cfg.tabPadding * 2
+
   if withIcon and cfg.iconSize > 0 then
     width += cfg.iconSize
+    parts += 1
+  end
+  if withLabel then
+    -- The label slot carries the controls inside itself, so nothing extra is
+    -- added here; the reserve is subtracted from the label at render time.
+    parts += 1
+  elseif controlSlotWidth() > 0 and not withLabel and cfg.iconSize <= 0 then
+    -- Degenerate case: no icon and no label leaves only the controls.
+    width += controlSlotWidth()
+    parts += 1
+  end
+
+  if parts > 1 then
+    width += (parts - 1) * ICON_GAP
   end
   return width
 end
@@ -163,9 +222,12 @@ local function planLayout(tabs)
   end
 
   local gaps = (count - 1) * cfg.tabGap
-  local fixed = tabFixedWidth(true) * count + gaps
+  local fixed = tabFixedWidth(true, true) * count + gaps
   local budget = cfg.maxTotalWidth - fixed
 
+  -- No reservation: an idle tab spends its entire label slot on the title. The
+  -- controls borrow that space only while they are showing, so hiding them
+  -- buys title width instead of leaving a permanent gap.
   local minLabel = cfg.minTitleChars * charWidth()
   local maxLabel = cfg.maxTitleChars * charWidth()
 
@@ -183,21 +245,18 @@ local function planLayout(tabs)
   end
 
   -- 3. Labels do not fit at all: icon-only tabs.
-  if cfg.iconSize > 0 then
-    local iconOnly = tabFixedWidth(true) * count + gaps
-    if iconOnly <= cfg.maxTotalWidth then
-      plan.labelWidth = 0
-      return plan
-    end
+  local iconTab = tabFixedWidth(true, false)
+  if cfg.iconSize > 0 and iconTab * count + gaps <= cfg.maxTotalWidth then
+    plan.labelWidth = 0
+    return plan
   end
 
   -- 4. Still over: drop the tail into a `+N` chip. Search downward for the
   --    largest number of tabs that fits alongside the chip it implies.
-  local iconTab = tabFixedWidth(cfg.iconSize > 0)
   for visible = count - 1, 1, -1 do
     local hidden = count - visible
     local total = iconTab * visible
-      + (visible) * cfg.tabGap
+      + visible * cfg.tabGap
       + overflowChipWidth(hidden)
     if total <= cfg.maxTotalWidth then
       plan.visible = visible
@@ -216,62 +275,101 @@ end
 
 -- ── Rendering ───────────────────────────────────────────────────────────────
 
+-- Hover identity, and why the controls used to flicker.
+--
+-- Revealing the controls inserts new nodes under the pointer, and those nodes
+-- are hover targets in their own right. Sliding from a tab's title onto its
+-- close button therefore reported a *leave* for the tab, which un-revealed the
+-- controls, which put plain title back under the pointer, which re-revealed
+-- them - forever. The fix is not to ignore leaves (that only made the controls
+-- stick, since the widget-level onHover callback never fires here) but to make
+-- the whole tab answer to one identity: each control row carries the tab's own
+-- address with a `#suffix`, stripped below, so moving anywhere *within* a tab
+-- reads as staying on it. Leaves can then be honoured immediately, and only a
+-- real exit from the strip produces one.
+local function baseAddress(key)
+  if type(key) ~= "string" then
+    return nil
+  end
+  local base = string.match(key, "^(.-)#")
+  return base or key
+end
+
 function onTabHover(hoverState, key)
   local entered = hoverState == true or hoverState == "true"
-  if entered then
-    hoveredAddress = key
-    for _, tab in ipairs(state.tabs or {}) do
-      if tab.address == key then
-        barWidget.setTooltip({
-          { key = noctalia.tr("tooltip.title"), value = tab.title ~= "" and tab.title or noctalia.tr("tooltip.untitled") },
-          { key = noctalia.tr("tooltip.app"), value = tab.class or "" },
-        })
-        break
-      end
+  local address = baseAddress(key)
+  if address == nil or address == "" then
+    return
+  end
+
+  if not entered then
+    if hoveredAddress == address then
+      hoveredAddress = nil
+      barWidget.clearTooltip()
+      render(renderedVertical)
     end
-  elseif hoveredAddress == key then
-    hoveredAddress = nil
-    barWidget.clearTooltip()
+    return
+  end
+
+  if hoveredAddress == address then
+    return -- already latched here: no state change, so no re-render
+  end
+
+  hoveredAddress = address
+  for _, tab in ipairs(state.tabs or {}) do
+    if tab.address == address then
+      barWidget.setTooltip({
+        { key = noctalia.tr("tooltip.title"), value = tab.title ~= "" and tab.title or noctalia.tr("tooltip.untitled") },
+        { key = noctalia.tr("tooltip.app"), value = tab.class or "" },
+      })
+      break
+    end
   end
   render(renderedVertical)
 end
 
-local function controlSlot(tab, vertical)
-  local count = controlCount()
-  if count == 0 or vertical then
-    return nil
+-- Whether the controls are *painted*. They are always laid out - see below -
+-- so this only ever changes colour, never geometry.
+local function controlsPainted(tab, vertical)
+  if vertical or controlCount() == 0 then
+    return false
   end
+  return cfg.showControls == "always" or hoveredAddress == tab.address
+end
 
-  local shown = cfg.showControls == "always" or hoveredAddress == tab.address
-  if not shown then
-    -- Reserve the exact same width, but with nothing interactive in it.
-    return ui.spacer({ width = controlSlotWidth() })
+-- Only ever built when the controls are actually showing. The tree changing
+-- shape on hover is safe now only because hover is latched (see onTabHover) -
+-- without that latch this is precisely the structure that oscillated.
+local function controlSlot(tab)
+  local glyphColor = tab.focused and cfg.activeText or cfg.inactiveText
+
+  -- ui.row, not ui.box: in Noctalia a box is a leaf - it takes no children and
+  -- has no align/justify - so a box wrapping a glyph silently drops the glyph.
+  local function controlBox(glyph, action)
+    return ui.row({
+      -- Reports hover as the tab itself, so sliding onto a button does not read
+      -- as leaving the tab. The suffix keeps sibling keys distinct.
+      key = `{tab.address}#{action}`,
+      onHover = "onTabHover",
+      width = controlButtonWidth(),
+      align = "center",
+      justify = "center",
+      onClick = function()
+        request(action, tab.address)
+      end,
+    }, {
+      ui.glyph({ name = glyph, size = cfg.fontSize, color = glyphColor }),
+    })
   end
 
   local buttons = {}
   if cfg.enableMaximize then
-    table.insert(buttons, ui.button({
-      glyph = tab.fullscreen ~= 0 and "minimize" or "maximize",
-      glyphSize = cfg.fontSize,
-      variant = "ghost",
-      controlSize = "sm",
-      onClick = function()
-        request("maximize", tab.address)
-      end,
-    }))
+    table.insert(buttons, controlBox(tab.fullscreen ~= 0 and "minimize" or "maximize", "maximize"))
   end
   if cfg.enableClose then
-    table.insert(buttons, ui.button({
-      glyph = "x",
-      glyphSize = cfg.fontSize,
-      variant = "ghost",
-      controlSize = "sm",
-      onClick = function()
-        request("close", tab.address)
-      end,
-    }))
+    table.insert(buttons, controlBox("x", "close"))
   end
-  return ui.row({ gap = 0, align = "center", minWidth = controlSlotWidth() }, buttons)
+  return ui.row({ key = "ctl", gap = 0, align = "center", width = controlSlotWidth() }, buttons)
 end
 
 local function tabNode(tab, plan, vertical)
@@ -298,21 +396,43 @@ local function tabNode(tab, plan, vertical)
 
   if plan.labelWidth > 0 and not vertical then
     local title = tab.title ~= "" and tab.title or (tab.class or "")
-    table.insert(children, ui.label({
-      text = clampChars(title, cfg.maxTitleChars),
-      -- The renderer elides at this width, so the pixel budget above is a
-      -- guarantee rather than an estimate.
-      maxWidth = plan.labelWidth,
-      maxLines = 1,
-      fontSize = cfg.fontSize,
-      fontWeight = focused and "semibold" or "medium",
-      color = focused and cfg.activeText or cfg.inactiveText,
-    }))
-  end
+    -- Controls occupy space only while shown, and they take it from the title
+    -- rather than from the strip: the label slot is a fixed width either way,
+    -- so the tab - and every tab after it - stays put. Idle tabs spend that
+    -- space on the title instead.
+    local showControls = controlsPainted(tab, vertical)
 
-  local slot = controlSlot(tab, vertical)
-  if slot ~= nil then
-    table.insert(children, slot)
+    local textWidth = plan.labelWidth
+    if showControls then
+      textWidth = math.max(0, textWidth - controlReserve(true))
+    end
+
+    local slotChildren = {
+      ui.label({
+        key = "title",
+        text = clampChars(title, cfg.maxTitleChars),
+        -- The renderer elides at this width, so the pixel budget above is a
+        -- guarantee rather than an estimate.
+        maxWidth = textWidth,
+        maxLines = 1,
+        fontSize = cfg.fontSize,
+        fontWeight = focused and "semibold" or "medium",
+        color = focused and cfg.activeText or cfg.inactiveText,
+      }),
+    }
+    if showControls then
+      table.insert(slotChildren, controlSlot(tab))
+    end
+
+    table.insert(children, ui.row({
+      key = "body",
+      width = plan.labelWidth,
+      gap = ICON_GAP,
+      align = "center",
+      -- Pins the controls to the right edge, so a short title does not drag
+      -- them into the middle of the tab.
+      justify = "space_between",
+    }, slotChildren))
   end
 
   local container = vertical and ui.column or ui.row
@@ -328,6 +448,9 @@ local function tabNode(tab, plan, vertical)
     end,
     onHover = "onTabHover",
   }
+  if cfg.resolvedHeight > 0 then
+    props.height = cfg.resolvedHeight
+  end
   if vertical then
     props.paddingV = cfg.tabPadding
   else
@@ -345,6 +468,7 @@ local function overflowNode(count, vertical)
     justify = "center",
     fill = cfg.inactiveFill,
     radius = cfg.tabRadius,
+    height = cfg.resolvedHeight > 0 and cfg.resolvedHeight or nil,
     paddingH = vertical and nil or cfg.tabPadding,
     paddingV = vertical and cfg.tabPadding or nil,
     onClick = function()
@@ -400,13 +524,22 @@ function update()
   local vertical = barWidget.isVertical()
   if vertical ~= renderedVertical then
     render(vertical)
+    return
   end
+
 end
 
--- The widget-level hover leave is the reliable one: if the pointer exits the
--- strip between two tabs, a per-tab leave can be missed.
+-- The only thing that unlatches hover. Per-tab leaves are ignored (see
+-- onTabHover), so this is what returns the strip to its resting state once the
+-- pointer is off the widget entirely.
+--
+-- The normalisation matters: the pointer state arrives as the string "false"
+-- as often as the boolean, and `not "false"` is false in Lua, so a plain
+-- truthiness test silently never unlatches - which is exactly how the controls
+-- ended up sticky.
 function onHover(entered)
-  if not entered and hoveredAddress ~= nil then
+  local isInside = entered == true or entered == "true"
+  if not isInside and hoveredAddress ~= nil then
     hoveredAddress = nil
     barWidget.clearTooltip()
     render(renderedVertical)

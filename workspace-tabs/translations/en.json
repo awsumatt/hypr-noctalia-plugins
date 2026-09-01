@@ -68,6 +68,10 @@
       "description": "Space between tabs.",
       "label": "Tab spacing"
     },
+    "tab_height": {
+      "description": "Height of each tab. Leave at 0 to match the bar's own capsule thickness, so tabs line up with the clock, tray and other capsules.",
+      "label": "Tab height"
+    },
     "tab_padding": {
       "description": "Horizontal padding inside each tab.",
       "label": "Tab padding"

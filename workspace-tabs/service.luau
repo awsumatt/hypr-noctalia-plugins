@@ -316,36 +316,65 @@ end
 
 -- ── Actions requested by the bar widget ─────────────────────────────────────
 
-local function dispatch(argv, failureKey)
-  noctalia.runAsync(argv, function(result)
-    if result.exitCode ~= 0 or result.timedOut then
-      noctalia.notifyError(noctalia.tr(failureKey), noctalia.string.trim(result.stderr))
-    end
-    -- Success needs no refresh: the compositor announces the change on the
-    -- stream by itself.
-  end)
+-- Hyprland's config is Lua on this build, and `hyprctl dispatch` evaluates its
+-- argument as `return hl.dispatch(<arg>)`. Two consequences shape everything
+-- below:
+--
+--   * `hl.dsp.*` are *builders*. They return a dispatcher; `hl.dispatch` runs
+--     it. So the argument has to be a single expression that evaluates to a
+--     dispatcher - a bare `local w = …` statement is a syntax error.
+--   * The classic `dispatch closewindow address:0x…` string no longer parses at
+--     all. Targeting means `window = hl.get_window("address:…")`.
+--
+-- The nil guard is the important part, not boilerplate. A table whose `window`
+-- is nil does NOT no-op: the dispatcher silently falls back to the *active*
+-- window. A tab whose window died a moment ago would therefore close whatever
+-- the user is currently looking at. Returning hl.dsp.no_op() instead is what
+-- stands between a stale address and a lost window, so every action is built
+-- here and nowhere else.
+local function windowLua(address, builder)
+  return `(function() local w = hl.get_window("address:{address}") `
+    .. `if w then return {builder} end return hl.dsp.no_op() end)()`
 end
+
+local ACTIONS = {
+  focus = {
+    builder = "hl.dsp.focus({ window = w })",
+    failure = "notify.focus_failed",
+  },
+  close = {
+    builder = "hl.dsp.window.close({ window = w })",
+    failure = "notify.close_failed",
+  },
+  maximize = {
+    builder = "hl.dsp.window.fullscreen({ window = w, mode = \"maximized\", action = \"toggle\" })",
+    failure = "notify.maximize_failed",
+  },
+}
 
 local function handleRequest(request)
   if type(request) ~= "table" or type(request.address) ~= "string" then
     return
   end
-  local target = `address:{request.address}`
-
-  if request.action == "focus" then
-    dispatch({ "hyprctl", "dispatch", "focuswindow", target }, "notify.focus_failed")
-  elseif request.action == "close" then
-    dispatch({ "hyprctl", "dispatch", "closewindow", target }, "notify.close_failed")
-  elseif request.action == "maximize" then
-    -- Window dispatchers act on the active window, so the toggle has to focus
-    -- first. --batch keeps that atomic. `fullscreen 1` is Hyprland's maximize,
-    -- and it toggles off when the window is already in that state.
-    dispatch({
-      "hyprctl",
-      "--batch",
-      `dispatch focuswindow {target} ; dispatch fullscreen 1`,
-    }, "notify.maximize_failed")
+  -- Addresses come from hyprctl and are hex, but this string is evaluated as
+  -- Lua by the compositor, so refuse anything that is not exactly that.
+  if not string.match(request.address, "^0[xX]%x+$") then
+    return
   end
+
+  local action = ACTIONS[request.action]
+  if action == nil then
+    return
+  end
+
+  local argv = { "hyprctl", "dispatch", windowLua(request.address, action.builder) }
+  noctalia.runAsync(argv, function(result)
+    if result.exitCode ~= 0 or result.timedOut then
+      noctalia.notifyError(noctalia.tr(action.failure), noctalia.string.trim(result.stderr))
+    end
+    -- Success needs no refresh: the compositor announces the change on the
+    -- stream by itself.
+  end)
 end
 
 -- ── Lifecycle ───────────────────────────────────────────────────────────────

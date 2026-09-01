@@ -118,6 +118,15 @@ entry = "widget.luau"
   visible_when    = { key = "show_controls", values = ["hover", "always"] }
 
   [[widget.setting]]
+  key             = "tab_height"
+  type            = "int"
+  label_key       = "settings.tab_height.label"
+  description_key = "settings.tab_height.description"
+  default         = 0
+  min             = 0
+  max             = 200
+
+  [[widget.setting]]
   key             = "tab_radius"
   type            = "int"
   label_key       = "settings.tab_radius.label"
