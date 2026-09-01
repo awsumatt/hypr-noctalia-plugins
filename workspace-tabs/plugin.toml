@@ -90,6 +90,15 @@ entry = "widget.luau"
   max             = 24
 
   [[widget.setting]]
+  key             = "font_weight"
+  type            = "int"
+  label_key       = "settings.font_weight.label"
+  description_key = "settings.font_weight.description"
+  default         = 0
+  min             = 0
+  max             = 900
+
+  [[widget.setting]]
   key             = "show_controls"
   type            = "select"
   label_key       = "settings.show_controls.label"

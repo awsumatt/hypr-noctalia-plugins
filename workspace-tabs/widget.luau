@@ -71,6 +71,7 @@ local function readConfig()
   cfg.charAdvance = math.max(0.3, tonumber(noctalia.getConfig("char_advance")) or 0.55)
   cfg.iconSize = math.max(0, tonumber(noctalia.getConfig("icon_size")) or 16)
   cfg.fontSize = math.max(6, tonumber(noctalia.getConfig("font_size")) or 11)
+  cfg.fontWeight = tonumber(noctalia.getConfig("font_weight")) or 0
   cfg.showControls = noctalia.getConfig("show_controls") or "hover"
   cfg.enableMaximize = noctalia.getConfig("enable_maximize") == true
   cfg.enableClose = noctalia.getConfig("enable_close") == true
@@ -407,6 +408,7 @@ local function tabNode(tab, plan, vertical)
       textWidth = math.max(0, textWidth - controlReserve(true))
     end
 
+    local weight = cfg.fontWeight > 0 and cfg.fontWeight or (focused and "semibold" or "medium")
     local slotChildren = {
       ui.label({
         key = "title",
@@ -416,7 +418,7 @@ local function tabNode(tab, plan, vertical)
         maxWidth = textWidth,
         maxLines = 1,
         fontSize = cfg.fontSize,
-        fontWeight = focused and "semibold" or "medium",
+        fontWeight = weight,
         color = focused and cfg.activeText or cfg.inactiveText,
       }),
     }
@@ -478,7 +480,7 @@ local function overflowNode(count, vertical)
     ui.label({
       text = `+{count}`,
       fontSize = cfg.fontSize,
-      fontWeight = "semibold",
+      fontWeight = cfg.fontWeight > 0 and cfg.fontWeight or "semibold",
       color = cfg.inactiveText,
     }),
   })

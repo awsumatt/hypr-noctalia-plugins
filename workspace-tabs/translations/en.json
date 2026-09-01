@@ -29,6 +29,10 @@
       "description": "Font size of the tab labels.",
       "label": "Label size"
     },
+    "font_weight": {
+      "description": "Font weight of the tab labels. 0 uses the default (semibold for focused, medium for inactive). Common values: 400 normal, 500 medium, 600 semibold, 700 bold, 800 extra-bold.",
+      "label": "Font weight"
+    },
     "hide_when_empty": {
       "description": "Take no room on the bar when the focused workspace has no windows.",
       "label": "Hide when empty"
