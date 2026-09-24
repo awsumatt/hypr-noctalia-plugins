@@ -17,7 +17,7 @@
 
 id           = "awsumatt/workspace-tabs"
 name         = "Workspace Tabs"
-version      = "1.1.1"
+version      = "1.2.0"
 plugin_api   = 28
 author       = "awsumatt"
 license      = "MIT"
@@ -195,6 +195,13 @@ entry = "widget.luau"
   label_key       = "settings.inactive_text.label"
   description_key = "settings.inactive_text.description"
   default         = "on_surface"
+
+  [[widget.setting]]
+  key             = "hover_fill"
+  type            = "color"
+  label_key       = "settings.hover_fill.label"
+  description_key = "settings.hover_fill.description"
+  default         = "on_surface/0.12"
 
   [[widget.setting]]
   key             = "hide_when_empty"

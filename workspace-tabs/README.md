@@ -44,6 +44,15 @@ Hovering borrows width from the title rather than from the strip, so a tab is
 the same width whether or not its controls are showing and nothing shifts under
 the pointer. An idle tab spends that space on a longer title.
 
+The tab under the pointer is tinted with `hover_fill`, so the highlight follows
+the cursor from tab to tab. Noctalia also draws a hover highlight of its own
+(`Bar::animateWidgetHoverHighlight` takes the whole `Widget`), and its setting is
+bar-level (`[bar.<name>] hover_highlight`, also per-monitor under
+`[bar.<name>.monitor.*]`), so it can only ever tint the entire strip. Turn it off
+in Bar → Hover highlight if you want the per-tab tint to be the only feedback —
+note that this applies to every widget on that bar, not just this one, and that
+there is no per-widget switch for it.
+
 Middle click requires the widget's `middle` gesture to be unbound, which the
 manifest does by default (`[widget.actions] middle = "none"`). Every widget
 otherwise ships `middle = "settings-open-widget"`, which would swallow it.
@@ -81,6 +90,7 @@ that budget. Raise it if titles look cramped, lower it if the strip stops short.
 | `tab_gap` | int | 4 | |
 | `active_fill` / `active_text` | color | `primary` / `on_primary` | |
 | `inactive_fill` / `inactive_text` | color | `surface_variant` / `on_surface` | |
+| `hover_fill` | color | `on_surface/0.12` | Tint of the tab under the pointer; role/alpha or hex |
 | `hide_when_empty` | bool | true | |
 
 ## Implementation notes

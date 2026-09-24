@@ -28,6 +28,10 @@
 -- is always in the layout at a fixed width and only its *contents* change: an
 -- inert ui.spacer when idle, buttons when shown. Same width either way, no
 -- reflow, and no invisible click targets.
+--
+-- The hover *tint* is likewise per tab (hover_fill on the hovered one), because
+-- Noctalia's own hover highlight is drawn around the whole widget - it can only
+-- ever tint the entire strip.
 
 local STATE_KEY = "tabs"
 local REQUEST_KEY = "request"
@@ -104,6 +108,7 @@ local function readConfig()
   cfg.tabGap = math.max(0, tonumber(noctalia.getConfig("tab_gap")) or 4)
   cfg.activeFill = noctalia.getConfig("active_fill") or "primary"
   cfg.activeText = noctalia.getConfig("active_text") or "on_primary"
+  cfg.hoverFill = noctalia.getConfig("hover_fill") or "on_surface/0.12"
   cfg.inactiveFill = noctalia.getConfig("inactive_fill") or "surface_variant"
   cfg.inactiveText = noctalia.getConfig("inactive_text") or "on_surface"
   cfg.hideWhenEmpty = noctalia.getConfig("hide_when_empty") == true
@@ -555,7 +560,14 @@ local function tabNode(tab, plan, vertical)
     gap = ICON_GAP,
     align = "center",
     justify = "center",
-    fill = focused and cfg.activeFill or cfg.inactiveFill,
+    -- The hover tint is per tab, not per strip. Noctalia's own hover highlight
+    -- is drawn by the bar around the whole widget (Bar::animateWidgetHoverHighlight
+    -- takes the Widget), and it is a bar-level setting, so it can only ever tint
+    -- the entire strip. Painting the hovered tab here is what makes the feedback
+    -- follow the pointer from tab to tab; turn the bar's highlight off if you
+    -- would rather not have both.
+    fill = focused and cfg.activeFill
+      or (hoveredAddress == tab.address and cfg.hoverFill or cfg.inactiveFill),
     radius = cfg.tabRadius,
     onClick = function()
       request("focus", tab.address)

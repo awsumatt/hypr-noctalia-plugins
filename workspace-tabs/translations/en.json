@@ -49,6 +49,10 @@
       "description": "Icon and label colour on unfocused tabs.",
       "label": "Inactive tab text"
     },
+    "hover_fill": {
+      "description": "Background of the tab under the pointer. A colour role with alpha works here (e.g. on_surface/0.12); set it to the inactive tab colour for no hover tint. Noctalia's own hover highlight tints this whole widget, so turn it off under Bar → Hover highlight if you want the feedback to follow the pointer instead.",
+      "label": "Hovered tab colour"
+    },
     "max_title_chars": {
       "description": "Longest a tab label ever gets, even when there is room to spare.",
       "label": "Maximum title length"
