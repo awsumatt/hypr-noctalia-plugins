@@ -1,9 +1,9 @@
 --!nonstrict
 -- Workspace Tabs service - the only entry that talks to Hyprland.
 --
--- The plugin API has no window or workspace introspection at all, so the window
--- list has to come from the compositor directly. Two sources, and the split
--- between them is the whole point of this file:
+-- The plugin API has no window introspection at all, so the window list has to
+-- come from the compositor directly. Two sources, and the split between them is
+-- the whole point of this file:
 --
 --   hyprctl -j clients / -j monitors   full truth, but a subprocess per call
 --   socat on .socket2.sock             a push stream, but only tells us *what*
@@ -16,6 +16,13 @@
 -- everything else marks the snapshot dirty and a 100 ms tick coalesces the
 -- burst into one hyprctl pair.
 --
+-- The snapshot is *per output*, not global. Each widget instance discovers which
+-- monitor its bar is on (barWidget.outputName(), the one piece of bar
+-- introspection Noctalia exposes) and reads its own slice, so every monitor
+-- shows the windows of the workspace displayed *there*. Grouping is free: the
+-- two hyprctl calls already carry it - a monitor's activeWorkspace plus each
+-- client's workspace - so this costs no extra subprocess.
+--
 --   noctalia.runStream(cmd, onLine)          long-lived child, one call per line
 --   noctalia.state.set("tabs", snapshot)     one snapshot, one widget re-render
 --   noctalia.state.watch("request", handler) focus / close / maximize from the bar
@@ -27,7 +34,13 @@ local STREAM_REFRESH_MARKER = "__NOCTALIA_WORKSPACE_TABS_STREAM_REFRESH__"
 local SNAPSHOT_ATTEMPTS = 2
 local TICK_MS = 100
 
-local snapshot = { available = false, workspace = nil, tabs = {} }
+-- One snapshot, shaped per output:
+--
+--   { available, focusedOutput, outputs = { [connector] = { workspace, tabs } } }
+--
+-- `focusedOutput` is the fallback for a widget that cannot name its own output,
+-- so it degrades to the old follow-the-focus behaviour rather than to nothing.
+local snapshot = { available = false, focusedOutput = nil, outputs = {} }
 local refreshInFlight = false
 local refreshPending = false
 local dirty = false
@@ -68,36 +81,20 @@ local function publish()
 end
 
 -- Hyprland reports the special workspace separately from activeWorkspace: when
--- one is open it is what the user actually sees, so it wins.
-local function focusedWorkspaceOf(monitors)
-  for _, monitor in ipairs(monitors) do
-    if monitor.focused == true then
-      local special = monitor.specialWorkspace
-      if type(special) == "table" and type(special.name) == "string" and special.name ~= "" then
-        return { id = special.id, name = special.name }, monitor.name
-      end
-      local active = monitor.activeWorkspace
-      if type(active) == "table" then
-        return { id = active.id, name = active.name }, monitor.name
-      end
-      return nil, monitor.name
-    end
+-- one is open on a monitor it is what the user actually sees there, so it wins.
+local function displayedWorkspaceOf(monitor)
+  local special = monitor.specialWorkspace
+  if type(special) == "table" and type(special.name) == "string" and special.name ~= "" then
+    return { id = special.id, name = special.name }
   end
-  return nil, nil
+  local active = monitor.activeWorkspace
+  if type(active) == "table" and type(active.id) == "number" then
+    return { id = active.id, name = active.name }
+  end
+  return nil
 end
 
-local function buildSnapshot(clientsJson, monitorsJson)
-  local clients = noctalia.json.decode(clientsJson)
-  local monitors = noctalia.json.decode(monitorsJson)
-  if type(clients) ~= "table" or type(monitors) ~= "table" then
-    return nil, "invalid Hyprland JSON"
-  end
-
-  local workspace, outputName = focusedWorkspaceOf(monitors)
-  if workspace == nil then
-    return { available = true, workspace = nil, output = outputName, tabs = {} }
-  end
-
+local function tabsForWorkspace(clients, workspace)
   local tabs = {}
   for _, client in ipairs(clients) do
     local ws = client.workspace
@@ -136,7 +133,37 @@ local function buildSnapshot(clientsJson, monitorsJson)
     return a.address < b.address
   end)
 
-  return { available = true, workspace = workspace, output = outputName, tabs = tabs }
+  return tabs
+end
+
+-- Keyed by monitor name, which is the connector string Noctalia hands the widget
+-- (barWidget.outputName(), and DRM connector names in noctalia.outputs()). A
+-- workspace is displayed on exactly one monitor, so the workspace id alone is a
+-- sound join: no window can land in two strips.
+local function buildSnapshot(clientsJson, monitorsJson)
+  local clients = noctalia.json.decode(clientsJson)
+  local monitors = noctalia.json.decode(monitorsJson)
+  if type(clients) ~= "table" or type(monitors) ~= "table" then
+    return nil, "invalid Hyprland JSON"
+  end
+
+  local outputs = {}
+  local focusedOutput = nil
+  for _, monitor in ipairs(monitors) do
+    local name = monitor.name
+    if type(name) == "string" and name ~= "" then
+      local workspace = displayedWorkspaceOf(monitor)
+      outputs[name] = {
+        workspace = workspace,
+        tabs = workspace ~= nil and tabsForWorkspace(clients, workspace) or {},
+      }
+      if monitor.focused == true then
+        focusedOutput = name
+      end
+    end
+  end
+
+  return { available = true, focusedOutput = focusedOutput, outputs = outputs }
 end
 
 local function refresh()
@@ -194,13 +221,15 @@ end
 -- ── Fast paths: patch the snapshot from the event line, no subprocess ────────
 
 local function patchTitle(address, title)
-  for _, tab in ipairs(snapshot.tabs) do
-    if bareAddress(tab.address) == address then
-      if tab.title ~= title then
-        tab.title = title
-        publish()
+  for _, output in pairs(snapshot.outputs or {}) do
+    for _, tab in ipairs(output.tabs) do
+      if bareAddress(tab.address) == address then
+        if tab.title ~= title then
+          tab.title = title
+          publish()
+        end
+        return true
       end
-      return true
     end
   end
   return false
@@ -209,14 +238,16 @@ end
 local function patchFocus(address)
   local changed = false
   local matched = false
-  for _, tab in ipairs(snapshot.tabs) do
-    local isFocused = address ~= "" and bareAddress(tab.address) == address
-    if isFocused then
-      matched = true
-    end
-    if tab.focused ~= isFocused then
-      tab.focused = isFocused
-      changed = true
+  for _, output in pairs(snapshot.outputs or {}) do
+    for _, tab in ipairs(output.tabs) do
+      local isFocused = address ~= "" and bareAddress(tab.address) == address
+      if isFocused then
+        matched = true
+      end
+      if tab.focused ~= isFocused then
+        tab.focused = isFocused
+        changed = true
+      end
     end
   end
   if changed then

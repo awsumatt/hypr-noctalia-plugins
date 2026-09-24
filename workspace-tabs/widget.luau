@@ -1,11 +1,19 @@
 --!nonstrict
--- Workspace Tabs bar widget - the windows of the focused workspace, as tabs.
+-- Workspace Tabs bar widget - the windows of the workspace this bar sits on, as
+-- tabs.
 --
 -- Pure presentation: every window fact arrives on the "tabs" state channel from
 -- service.luau, and every action leaves on the "request" channel. This entry
 -- never shells out, so putting the widget on several bars costs nothing extra.
 --
--- Two details drive most of the code below.
+-- Which workspace that is, is this instance's business and nobody else's.
+-- Noctalia spawns a bar instance per monitor, and barWidget.outputName() names
+-- the connector that instance is on, so the same widget definition yields a
+-- different strip on every screen - the service publishes one entry per output
+-- and this picks its own. See selectEntry() for what happens when the name is
+-- unknown.
+--
+-- Two other details drive most of the code below.
 --
 -- Width. There is no text measurement API, so a tab strip cannot know what it
 -- will cost before it renders. Instead of guessing glyph advances and hoping,
@@ -33,11 +41,17 @@ local ICON_GAP = 4
 -- given, which keeps the whole tab exactly predictable.
 local CONTROL_BUTTON_PAD = 8
 
-local state = noctalia.state.get(STATE_KEY) or { available = false, tabs = {} }
+local state = noctalia.state.get(STATE_KEY) or { available = false, outputs = {} }
 local iconCache = {}
 local hoveredAddress = nil
 local requestNonce = 0
 local renderedVertical = nil
+-- The output this instance last resolved, so update() can notice a bar that was
+-- moved to another monitor with no state change to announce it.
+local renderedOutput = nil
+-- The tabs currently on screen - this output's slice of the snapshot. Hover and
+-- middle click read it, so it has to be the same list render() drew.
+local tabs = {}
 
 
 local cfg = {}
@@ -45,8 +59,9 @@ local cfg = {}
 -- A tab is a capsule, and it should be the same capsule as the clock or the
 -- tray next to it. The bar expresses that as `capsule_thickness`, a fraction of
 -- its own thickness, so the two settings together give the exact pixel height
--- the built-in capsules use. There is no API for "which bar am I on", so this
--- reads the first bar in the order - exact for a single-bar setup, and
+-- the built-in capsules use. There is no API for "which *bar* am I on" -
+-- barWidget.outputName() names the monitor, not the [bar.*] entry - so this
+-- reads the first bar in the order: exact for a single-bar setup, and
 -- overridable with the tab_height setting when it is not.
 local function resolveTabHeight()
   local configured = math.max(0, tonumber(noctalia.getConfig("tab_height")) or 0)
@@ -72,6 +87,7 @@ local function readConfig()
   cfg.iconSize = math.max(0, tonumber(noctalia.getConfig("icon_size")) or 16)
   cfg.fontSize = math.max(6, tonumber(noctalia.getConfig("font_size")) or 11)
   cfg.fontWeight = tonumber(noctalia.getConfig("font_weight")) or 0
+  cfg.scope = noctalia.getConfig("scope") or "output"
   cfg.showControls = noctalia.getConfig("show_controls") or "hover"
   cfg.enableMaximize = noctalia.getConfig("enable_maximize") == true
   cfg.enableClose = noctalia.getConfig("enable_close") == true
@@ -161,6 +177,41 @@ local function request(action, address)
     address = address,
     nonce = requestNonce,
   })
+end
+
+-- ── Which slice of the snapshot is ours ─────────────────────────────────────
+--
+-- barWidget.outputName() is the connector of the output this instance's bar is
+-- on - per instance, unlike noctalia.focusedOutputName(). That is the whole
+-- feature: three monitors, three bar instances, three different strips.
+--
+-- It can also come back nil (an older host, or a bar on an output Noctalia does
+-- not track), and a connector can be missing from the snapshot for a moment
+-- right after a monitor appears. Rather than draw nothing, fall back to the
+-- focused output's entry: on a single monitor that is the same entry, and on
+-- several it degrades to following the focus instead of going blank. A bar that
+-- resolves to an output with no windows is a different case - that is a genuine
+-- empty workspace and hide_when_empty applies as usual.
+local function selectEntry(snapshot, outputName)
+  if type(snapshot) ~= "table" or snapshot.available ~= true then
+    return nil
+  end
+  local outputs = snapshot.outputs
+  if type(outputs) ~= "table" then
+    return nil
+  end
+
+  -- `scope = "focused"` is the pre-1.1 behaviour, kept for bars whose user wants
+  -- every strip to mirror whichever workspace they are working on.
+  if cfg.scope == "focused" then
+    return outputs[snapshot.focusedOutput]
+  end
+
+  local entry = type(outputName) == "string" and outputs[outputName] or nil
+  if entry == nil then
+    entry = outputs[snapshot.focusedOutput]
+  end
+  return entry
 end
 
 -- ── Width budget ────────────────────────────────────────────────────────────
@@ -317,7 +368,7 @@ function onTabHover(hoverState, key)
   end
 
   hoveredAddress = address
-  for _, tab in ipairs(state.tabs or {}) do
+  for _, tab in ipairs(tabs) do
     if tab.address == address then
       barWidget.setTooltip({
         { key = noctalia.tr("tooltip.title"), value = tab.title ~= "" and tab.title or noctalia.tr("tooltip.untitled") },
@@ -492,9 +543,15 @@ function render(vertical)
   end
   renderedVertical = vertical
 
-  local tabs = state.tabs or {}
+  -- Read per render, never cached across one: a bar instance belongs to a fixed
+  -- monitor for its lifetime, and asking is the only way to be sure which.
+  local outputName = barWidget.outputName()
+  renderedOutput = outputName
 
-  if state.available ~= true then
+  local entry = selectEntry(state, outputName)
+  tabs = (entry ~= nil and entry.tabs) or {}
+
+  if entry == nil then
     barWidget.setVisible(false)
     return
   end
@@ -529,6 +586,12 @@ function update()
     return
   end
 
+  -- A bar can be reassigned to another monitor at runtime. That changes which
+  -- workspace this strip belongs to and nothing announces it, so the output is
+  -- re-read here and compared against the one render() last drew for.
+  if barWidget.outputName() ~= renderedOutput then
+    render(vertical)
+  end
 end
 
 -- The only thing that unlatches hover. Per-tab leaves are ignored (see
@@ -565,7 +628,7 @@ function onConfigChanged()
 end
 
 noctalia.state.watch(STATE_KEY, function(value)
-  state = type(value) == "table" and value or { available = false, tabs = {} }
+  state = type(value) == "table" and value or { available = false, outputs = {} }
   render(renderedVertical)
 end)
 

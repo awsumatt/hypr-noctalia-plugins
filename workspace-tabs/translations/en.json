@@ -34,7 +34,7 @@
       "label": "Font weight"
     },
     "hide_when_empty": {
-      "description": "Take no room on the bar when the focused workspace has no windows.",
+      "description": "Take no room on the bar when this bar's workspace has no windows.",
       "label": "Hide when empty"
     },
     "icon_size": {
@@ -60,6 +60,12 @@
     "min_title_chars": {
       "description": "Shortest a label may shrink to before tabs give up labels entirely and go icon-only.",
       "label": "Minimum title length"
+    },
+    "scope": {
+      "description": "Which workspace's windows to show. Each monitor shows the workspace displayed on it, or every strip can follow the focus instead.",
+      "focused": "Focused workspace (all strips)",
+      "label": "Workspace scope",
+      "output": "This bar's monitor"
     },
     "show_controls": {
       "always": "Always visible",

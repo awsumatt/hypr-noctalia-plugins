@@ -1,11 +1,11 @@
 [[plugin]]
 id           = "awsumatt/workspace-tabs"
 name         = "Workspace Tabs"
-version      = "1.0.0"
+version      = "1.1.0"
 author       = "awsumatt"
 license      = "MIT"
 icon         = "browser"
-description  = "Browser-style tabs for every window on the focused Hyprland workspace, with click-to-focus and hover-revealed maximize and close controls."
+description  = "Browser-style tabs for every window on each bar's own Hyprland workspace, with click-to-focus and hover-revealed maximize and close controls."
 deprecated   = false
 plugin_api   = 28
 tags         = ["hyprland", "bar", "taskbar", "windows", "workspace"]

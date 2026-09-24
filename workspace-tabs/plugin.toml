@@ -1,22 +1,26 @@
-# Workspace Tabs - browser-style tabs for the windows on the focused workspace.
+# Workspace Tabs - browser-style tabs for the windows on this bar's workspace.
 #
 # The Noctalia plugin API exposes no compositor introspection, so every window
 # fact here comes from Hyprland directly: `hyprctl -j clients` snapshots plus the
 # `.socket2.sock` event stream. One [[service]] owns that I/O and publishes a
-# snapshot on the plugin state channel; the [[widget]] is pure presentation, so N
-# bars on N outputs still cost exactly one poller.
+# per-output snapshot on the plugin state channel; the [[widget]] is pure
+# presentation, so N bars on N outputs still cost exactly one poller.
 #
-# service -> hyprctl + socat, snapshot on "tabs", actions from "request"
+# Bars are spawned once per monitor, and each widget instance learns its own
+# monitor from barWidget.outputName() - so every screen shows the tabs of the
+# workspace displayed there. `scope` reverts to follow-the-focus if asked.
+#
+# service -> hyprctl + socat, per-output snapshot on "tabs", actions from "request"
 # widget  -> the tab strip: icon + title, hover-revealed maximize/close
 
 id           = "awsumatt/workspace-tabs"
 name         = "Workspace Tabs"
-version      = "1.0.0"
+version      = "1.1.0"
 plugin_api   = 28
 author       = "awsumatt"
 license      = "MIT"
 icon         = "browser"
-description  = "Browser-style tabs for every window on the focused Hyprland workspace, with click-to-focus and hover-revealed maximize and close controls."
+description  = "Browser-style tabs for every window on each bar's own Hyprland workspace, with click-to-focus and hover-revealed maximize and close controls."
 tags         = ["hyprland", "bar", "taskbar", "windows", "workspace"]
 dependencies = ["socat"]
 
@@ -196,3 +200,14 @@ entry = "widget.luau"
   label_key       = "settings.hide_when_empty.label"
   description_key = "settings.hide_when_empty.description"
   default         = true
+
+  [[widget.setting]]
+  key             = "scope"
+  type            = "select"
+  label_key       = "settings.scope.label"
+  description_key = "settings.scope.description"
+  default         = "output"
+  options = [
+    { value = "output", label_key = "settings.scope.output" },
+    { value = "focused", label_key = "settings.scope.focused" },
+  ]
