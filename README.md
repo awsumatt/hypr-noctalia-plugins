@@ -4,9 +4,9 @@
 
 ## **Workspace Tabs** (`awsumatt/workspace-tabs`)
 
-Browser-style tabs for every window on the focused workspace. Application icon
-plus title, click to focus, middle-click or the hover-revealed close button to
-close, and a maximize toggle.
+Browser-style tabs for every window on each bar's own workspace, so every monitor
+gets its own strip. Application icon plus title, click to focus, middle-click or
+the hover-revealed close button to close, and a maximize toggle.
 
 ### Installation
 

@@ -1,6 +1,6 @@
 # Workspace Tabs
 
-Browser-style tabs for every window on the focused Hyprland workspace.
+Browser-style tabs for every window on this bar's Hyprland workspace.
 
 | Field | Value |
 | --- | --- |
@@ -13,6 +13,17 @@ Browser-style tabs for every window on the focused Hyprland workspace.
 
 Each tab shows the application icon and the window title. The focused window's
 tab is filled with the active colour.
+
+The strip is **per monitor**. Noctalia spawns one bar instance per monitor, and
+each widget instance asks the host which output its bar is on
+(`barWidget.outputName()`), so every screen shows the tabs of the workspace
+displayed *there* — not whichever workspace happens to be focused. A monitor
+showing a special workspace shows that workspace's windows instead. Move the
+pointer to another screen and neither strip changes; focus a window on another
+monitor and the tab fills in on that monitor's strip only.
+
+Set `scope` to `focused` to go back to a single strip mirrored on every monitor,
+following whichever workspace is focused.
 
 | Gesture | Action |
 | --- | --- |
@@ -52,6 +63,8 @@ that budget. Raise it if titles look cramped, lower it if the strip stops short.
 | `char_advance` | double | 0.55 | Character width as a fraction of font size |
 | `icon_size` | int | 16 | 0 hides icons |
 | `font_size` | int | 11 | |
+| `font_weight` | int | 0 | 0 uses semibold/medium by focus |
+| `scope` | select | `output` | `output` = this bar's monitor, `focused` = every strip follows the focus |
 | `show_controls` | select | `hover` | `hover` / `always` / `off` |
 | `enable_maximize` | bool | true | |
 | `enable_close` | bool | true | |
@@ -67,10 +80,20 @@ that budget. Raise it if titles look cramped, lower it if the strip stops short.
 
 The Noctalia plugin API exposes no window or workspace introspection, so all
 window state comes from Hyprland directly. One `[[service]]` owns that I/O and
-publishes a snapshot on the plugin state channel; the widget is pure
+publishes a per-output snapshot on the plugin state channel; the widget is pure
 presentation, so N bars cost one poller.
 
 - Snapshots come from `hyprctl -j clients` + `-j monitors`, coalesced at 10 Hz.
+  Grouping them per monitor is free: a monitor's `activeWorkspace` and each
+  client's `workspace` already carry the mapping, so no extra call is needed.
+- A workspace is displayed on exactly one monitor, so the workspace id alone
+  joins windows to strips. Special workspaces are handled per monitor and win
+  over `activeWorkspace` on the monitor showing them.
+- Each widget instance reads its own slice using `barWidget.outputName()` — the
+  connector of the output its bar is on, and the one piece of bar introspection
+  Noctalia exposes. It is per instance, unlike `noctalia.focusedOutputName()`.
+  When it returns nil (no host support, or a bar on an untracked output) the
+  strip falls back to the focused output rather than going blank.
 - `windowtitlev2` and `activewindowv2` carry their whole payload in the event
   line and are patched in without spawning a subprocess. A browser emits
   `windowtitlev2` on every keystroke in the URL bar, so this matters.
