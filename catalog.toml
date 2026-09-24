@@ -1,7 +1,7 @@
 [[plugin]]
 id           = "awsumatt/workspace-tabs"
 name         = "Workspace Tabs"
-version      = "1.1.0"
+version      = "1.1.1"
 author       = "awsumatt"
 license      = "MIT"
 icon         = "browser"

@@ -10,8 +10,8 @@
 -- Noctalia spawns a bar instance per monitor, and barWidget.outputName() names
 -- the connector that instance is on, so the same widget definition yields a
 -- different strip on every screen - the service publishes one entry per output
--- and this picks its own. See selectEntry() for what happens when the name is
--- unknown.
+-- and this picks its own. See currentEntry() for the rules, and for what happens
+-- when the host hands this bar no output name at all.
 --
 -- Two other details drive most of the code below.
 --
@@ -46,9 +46,16 @@ local iconCache = {}
 local hoveredAddress = nil
 local requestNonce = 0
 local renderedVertical = nil
--- The output this instance last resolved, so update() can notice a bar that was
--- moved to another monitor with no state change to announce it.
-local renderedOutput = nil
+-- The connector this instance's bar reported at load. Read once on purpose: the
+-- host hands a bar widget its output in the constructor and has no setter for it
+-- (PluginWidget::ipcOutputName returns a member), so re-deriving it every render
+-- would only ever return the same string - or, after a bar rebuild, a fresh
+-- "unknown" that must not silently re-target the strip. See outputEntry().
+local outputName = barWidget.outputName()
+local warnedNoOutput = false
+-- The signature of what is currently on the bar, so a push that does not change
+-- this strip draws nothing. See renderSignature().
+local renderedSignature = nil
 -- The tabs currently on screen - this output's slice of the snapshot. Hover and
 -- middle click read it, so it has to be the same list render() drew.
 local tabs = {}
@@ -185,33 +192,87 @@ end
 -- on - per instance, unlike noctalia.focusedOutputName(). That is the whole
 -- feature: three monitors, three bar instances, three different strips.
 --
--- It can also come back nil (an older host, or a bar on an output Noctalia does
--- not track), and a connector can be missing from the snapshot for a moment
--- right after a monitor appears. Rather than draw nothing, fall back to the
--- focused output's entry: on a single monitor that is the same entry, and on
--- several it degrades to following the focus instead of going blank. A bar that
--- resolves to an output with no windows is a different case - that is a genuine
--- empty workspace and hide_when_empty applies as usual.
-local function selectEntry(snapshot, outputName)
-  if type(snapshot) ~= "table" or snapshot.available ~= true then
+-- The name is not always there. The host derives it from the Wayland output of
+-- the bar's surface at construction (PluginWidget takes a connector string and
+-- widget_factory passes the empty string when it cannot resolve the wl_output),
+-- so an instance can be born nameless - typically during a bar rebuild, and the
+-- shell rebuilds bars on monitor focus changes. A nameless strip must not borrow
+-- the focused monitor's tabs: that is a different screen's windows drawn as if
+-- they were yours, which is exactly the flicker to avoid. So the rules are:
+--
+--   named, present in the snapshot   -> its own entry
+--   named, absent from the snapshot  -> nothing (that monitor is not in the
+--                                       compositor's list; borrowing would lie)
+--   nameless, exactly one monitor    -> that one entry (no ambiguity to resolve)
+--   nameless, several monitors       -> nothing, and say so once in the log
+--
+-- `scope = "focused"` overrides all of it and is the pre-1.1 behaviour: every
+-- strip mirrors whichever workspace is focused.
+local function entryFor(name)
+  if type(name) ~= "string" or name == "" then
     return nil
   end
-  local outputs = snapshot.outputs
+  local outputs = state.outputs
   if type(outputs) ~= "table" then
     return nil
   end
+  return outputs[name]
+end
 
-  -- `scope = "focused"` is the pre-1.1 behaviour, kept for bars whose user wants
-  -- every strip to mirror whichever workspace they are working on.
+-- The only entry, or nil when there is more than one and the answer would be a
+-- guess.
+local function soleEntry()
+  local outputs = state.outputs
+  if type(outputs) ~= "table" then
+    return nil
+  end
+  local sole = nil
+  for _, output in pairs(outputs) do
+    if sole ~= nil then
+      return nil
+    end
+    sole = output
+  end
+  return sole
+end
+
+-- A strip that cannot be matched to a monitor is worth one line in the log: the
+-- alternative is a bar that is silently empty with no hint why.
+local function noteUnmatchedOutput()
+  if warnedNoOutput then
+    return
+  end
+  warnedNoOutput = true
+  noctalia.log(
+    "Workspace Tabs: could not match this bar to a Hyprland monitor; showing nothing rather than another monitor's windows"
+  )
+end
+
+local function currentEntry()
+  if type(state) ~= "table" or state.available ~= true then
+    return nil
+  end
   if cfg.scope == "focused" then
-    return outputs[snapshot.focusedOutput]
+    return entryFor(state.focusedOutput)
   end
 
-  local entry = type(outputName) == "string" and outputs[outputName] or nil
-  if entry == nil then
-    entry = outputs[snapshot.focusedOutput]
+  local own = entryFor(outputName)
+  if own ~= nil then
+    return own
   end
-  return entry
+
+  if type(outputName) == "string" and outputName ~= "" then
+    -- Named but nowhere in the snapshot: a monitor the compositor does not list
+    -- (yet). Nothing is right to draw, so draw nothing; the next push fixes it.
+    noteUnmatchedOutput()
+    return nil
+  end
+
+  local sole = soleEntry()
+  if sole == nil then
+    noteUnmatchedOutput()
+  end
+  return sole
 end
 
 -- ── Width budget ────────────────────────────────────────────────────────────
@@ -537,25 +598,55 @@ local function overflowNode(count, vertical)
   })
 end
 
+-- Everything the tree below is built from, folded into one string.
+--
+-- Why bother: a bar surface redraw costs tens of milliseconds on a busy session,
+-- and the service publishes on every event on every monitor - a title keystroke
+-- in a browser, a window closing on another screen, a focus change. Rendering
+-- when none of *this* strip's content changed is what made every bar on the desk
+-- visibly blink along with the one that actually changed. The digest covers the
+-- entry's tabs, the config, the hover latch and the bar's orientation, so a push
+-- that would build the identical tree is dropped before it reaches the host.
+--
+-- The config half iterates cfg itself rather than listing keys, so a new setting
+-- cannot be forgotten here; the tab half names the fields tabNode() reads.
+local function renderSignature(vertical)
+  local entry = currentEntry()
+  if entry == nil or (cfg.hideWhenEmpty and #(entry.tabs or {}) == 0) then
+    return "hidden"
+  end
+
+  local parts = { vertical and "vertical" or "horizontal", tostring(hoveredAddress) }
+  local keys = {}
+  for key in pairs(cfg) do
+    table.insert(keys, key)
+  end
+  table.sort(keys)
+  for _, key in ipairs(keys) do
+    table.insert(parts, `{key}={cfg[key]}`)
+  end
+  for _, tab in ipairs(entry.tabs) do
+    table.insert(parts, `{tab.address}|{tab.title}|{tab.class}|{tab.focused}|{tab.fullscreen}`)
+  end
+  return table.concat(parts, "\n")
+end
+
 function render(vertical)
   if vertical == nil then
     vertical = barWidget.isVertical()
   end
   renderedVertical = vertical
 
-  -- Read per render, never cached across one: a bar instance belongs to a fixed
-  -- monitor for its lifetime, and asking is the only way to be sure which.
-  local outputName = barWidget.outputName()
-  renderedOutput = outputName
-
-  local entry = selectEntry(state, outputName)
+  local entry = currentEntry()
   tabs = (entry ~= nil and entry.tabs) or {}
 
-  if entry == nil then
-    barWidget.setVisible(false)
+  local signature = renderSignature(vertical)
+  if signature == renderedSignature then
     return
   end
-  if #tabs == 0 and cfg.hideWhenEmpty then
+  renderedSignature = signature
+
+  if entry == nil or (#tabs == 0 and cfg.hideWhenEmpty) then
     barWidget.setVisible(false)
     return
   end
@@ -582,14 +673,6 @@ end
 function update()
   local vertical = barWidget.isVertical()
   if vertical ~= renderedVertical then
-    render(vertical)
-    return
-  end
-
-  -- A bar can be reassigned to another monitor at runtime. That changes which
-  -- workspace this strip belongs to and nothing announces it, so the output is
-  -- re-read here and compared against the one render() last drew for.
-  if barWidget.outputName() ~= renderedOutput then
     render(vertical)
   end
 end

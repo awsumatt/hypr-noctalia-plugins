@@ -22,6 +22,13 @@ showing a special workspace shows that workspace's windows instead. Move the
 pointer to another screen and neither strip changes; focus a window on another
 monitor and the tab fills in on that monitor's strip only.
 
+A strip only ever draws its own monitor. If the host hands a bar no output name
+(the connector is resolved from the bar's Wayland surface at construction, and
+can come back empty during a bar rebuild) nothing is drawn for that instant
+rather than another screen's windows — except on a single-monitor setup, where
+there is nothing to be ambiguous about. A bar whose connector matches no
+Hyprland monitor behaves the same way and logs one line saying so.
+
 Set `scope` to `focused` to go back to a single strip mirrored on every monitor,
 following whichever workspace is focused.
 
@@ -91,9 +98,21 @@ presentation, so N bars cost one poller.
   over `activeWorkspace` on the monitor showing them.
 - Each widget instance reads its own slice using `barWidget.outputName()` — the
   connector of the output its bar is on, and the one piece of bar introspection
-  Noctalia exposes. It is per instance, unlike `noctalia.focusedOutputName()`.
-  When it returns nil (no host support, or a bar on an untracked output) the
-  strip falls back to the focused output rather than going blank.
+  Noctalia exposes. It is per instance, unlike `noctalia.focusedOutputName()`,
+  and fixed for the instance's life: the host resolves it from the bar's Wayland
+  surface at construction (`widget_factory.cpp` passes an empty string when that
+  lookup fails), and there is no setter. A strip that cannot be matched to a
+  monitor draws nothing rather than the focused monitor's tabs.
+- Only a strip that actually changed redraws. The widget folds its whole visual
+  state — entry tabs, settings, hover latch, orientation — into a signature and
+  drops a push that would rebuild the identical tree. Bar surface redraws cost
+  tens of milliseconds, and the service publishes on every event on every
+  monitor, so without this a title keystroke on one screen made all of them
+  blink.
+- `focusedmon`/`focusedmonv2` are patched from the event line instead of forcing
+  a refresh: a monitor focus change moves no window, so it only repoints the
+  fallback that a `scope = "focused"` strip reads. Clicking another monitor no
+  longer re-reads the compositor.
 - `windowtitlev2` and `activewindowv2` carry their whole payload in the event
   line and are patched in without spawning a subprocess. A browser emits
   `windowtitlev2` on every keystroke in the URL bar, so this matters.

@@ -258,8 +258,28 @@ local function patchFocus(address)
   return matched or address == ""
 end
 
+-- The monitor that owns the focused window, patched from the event line: no
+-- subprocess, and a republish only when the answer actually moved.
+local function patchFocusedMonitor(payload)
+  local name = string.match(payload, "^([^,]*)")
+  if name == nil or name == "" then
+    return false
+  end
+  if snapshot.focusedOutput == name then
+    return true
+  end
+  snapshot.focusedOutput = name
+  publish()
+  return true
+end
+
 -- Events that change *which* windows exist or where they live. Everything here
 -- costs one debounced hyprctl pair.
+--
+-- `focusedmon` is deliberately absent: a monitor focus change moves no window, so
+-- it is patched from the event line in onLine() at no cost. Letting it force a
+-- refresh meant every click on another screen re-read the whole compositor and
+-- republished, which every strip then re-rendered.
 local refreshEvents = {
   openwindow = true,
   closewindow = true,
@@ -276,8 +296,6 @@ local refreshEvents = {
   renameworkspace = true,
   activespecial = true,
   activespecialv2 = true,
-  focusedmon = true,
-  focusedmonv2 = true,
   monitoradded = true,
   monitoraddedv2 = true,
   monitorremoved = true,
@@ -313,6 +331,19 @@ local function onLine(line)
   -- `activewindowv2>>ADDRESS` (empty when focus is dropped).
   if event == "activewindowv2" then
     if not patchFocus(bareAddress(payload)) then
+      dirty = true
+    end
+    return
+  end
+
+  -- `focusedmonv2>>MONITOR,WORKSPACE`. A monitor focus change moves no window, so
+  -- the tab lists are already correct; only the pointer a follow-the-focus strip
+  -- reads has to move. The workspace half is ignored on purpose: a monitor that
+  -- genuinely switched workspaces says so with a `workspace` event, which does
+  -- refresh. Patching this instead of refreshing is what stops a click on another
+  -- screen from re-reading the compositor and republishing to every bar.
+  if event == "focusedmonv2" or event == "focusedmon" then
+    if not patchFocusedMonitor(payload) then
       dirty = true
     end
     return
