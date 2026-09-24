@@ -1,10 +1,10 @@
 # Workspace Tabs - browser-style tabs for the windows on this bar's workspace.
 #
 # The Noctalia plugin API exposes no compositor introspection, so every window
-# fact here comes from Hyprland directly: `hyprctl -j clients` snapshots plus the
-# `.socket2.sock` event stream. One [[service]] owns that I/O and publishes a
-# per-output snapshot on the plugin state channel; the [[widget]] is pure
-# presentation, so N bars on N outputs still cost exactly one poller.
+# fact here comes from Hyprland directly: one `hyprctl -j --batch` snapshot per
+# refresh plus the `.socket2.sock` event stream. One [[service]] owns that I/O and
+# publishes a per-output snapshot on the plugin state channel; the [[widget]] is
+# pure presentation, so N bars on N outputs still cost exactly one poller.
 #
 # Bars are spawned once per monitor, and each widget instance learns its own
 # monitor from barWidget.outputName() - so every screen shows the tabs of the
@@ -17,7 +17,7 @@
 
 id           = "awsumatt/workspace-tabs"
 name         = "Workspace Tabs"
-version      = "1.2.0"
+version      = "1.2.1"
 plugin_api   = 28
 author       = "awsumatt"
 license      = "MIT"

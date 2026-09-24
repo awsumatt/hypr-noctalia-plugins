@@ -100,9 +100,17 @@ window state comes from Hyprland directly. One `[[service]]` owns that I/O and
 publishes a per-output snapshot on the plugin state channel; the widget is pure
 presentation, so N bars cost one poller.
 
-- Snapshots come from `hyprctl -j clients` + `-j monitors`, coalesced at 10 Hz.
-  Grouping them per monitor is free: a monitor's `activeWorkspace` and each
-  client's `workspace` already carry the mapping, so no extra call is needed.
+- One snapshot is one `hyprctl -j --batch 'clients;monitors'`, passed as argv so
+  no shell is forked: a single process, and — because both halves are answered
+  inside one compositor request — they cannot disagree about which workspace a
+  window is on. Read as a separate pair, a workspace switch landing between the
+  two calls would put a window in the wrong strip.
+- Refreshes are coalesced at 10 Hz, and a snapshot that fails is retried behind a
+  short backoff rather than on every tick, so a restarting compositor is not
+  polled at 10 Hz.
+- Grouping the two halves per monitor is free: a monitor's `activeWorkspace` and
+  each client's `workspace` already carry the mapping, so no extra call is
+  needed.
 - A workspace is displayed on exactly one monitor, so the workspace id alone
   joins windows to strips. Special workspaces are handled per monitor and win
   over `activeWorkspace` on the monitor showing them.

@@ -5,23 +5,29 @@
 -- come from the compositor directly. Two sources, and the split between them is
 -- the whole point of this file:
 --
---   hyprctl -j clients / -j monitors   full truth, but a subprocess per call
---   socat on .socket2.sock             a push stream, but only tells us *what*
---                                      changed, not the new state
+--   hyprctl -j --batch 'clients;monitors'   full truth, one process, one
+--                                           compositor request
+--   socat on .socket2.sock                  a push stream, but only tells us
+--                                           *what* changed, not the new state
 --
 -- Naively refreshing on every event would be a subprocess storm: a browser
 -- emits `windowtitlev2` on every keystroke in the URL bar. So events are split
--- in two. `windowtitlev2` and `activewindowv2` carry their whole payload in the
--- line itself and are patched into the snapshot with no subprocess at all;
--- everything else marks the snapshot dirty and a 100 ms tick coalesces the
--- burst into one hyprctl pair.
+-- in two. `windowtitlev2`, `activewindowv2` and `focusedmonv2` carry their whole
+-- payload in the line itself and are patched into the snapshot with no
+-- subprocess at all; everything else marks the snapshot dirty and a 100 ms tick
+-- coalesces the burst into one hyprctl call.
+--
+-- The batch form is not just tidier than two calls: both halves are answered
+-- inside a single compositor request, so they cannot disagree about which
+-- workspace a window is on. Read as a pair, a workspace switch landing between
+-- the calls would put windows in the wrong strip.
 --
 -- The snapshot is *per output*, not global. Each widget instance discovers which
 -- monitor its bar is on (barWidget.outputName(), the one piece of bar
 -- introspection Noctalia exposes) and reads its own slice, so every monitor
 -- shows the windows of the workspace displayed *there*. Grouping is free: the
--- two hyprctl calls already carry it - a monitor's activeWorkspace plus each
--- client's workspace - so this costs no extra subprocess.
+-- two halves already carry it - a monitor's activeWorkspace plus each client's
+-- workspace - so this costs no extra call.
 --
 --   noctalia.runStream(cmd, onLine)          long-lived child, one call per line
 --   noctalia.state.set("tabs", snapshot)     one snapshot, one widget re-render
@@ -29,21 +35,29 @@
 
 local STATE_KEY = "tabs"
 local REQUEST_KEY = "request"
-local SEPARATOR = "__NOCTALIA_WORKSPACE_TABS_SPLIT__"
 local STREAM_REFRESH_MARKER = "__NOCTALIA_WORKSPACE_TABS_STREAM_REFRESH__"
-local SNAPSHOT_ATTEMPTS = 2
+-- What `hyprctl -j --batch` puts between the two documents it prints.
+local BATCH_SEPARATOR = "\n\n"
 local TICK_MS = 100
+-- Ticks to wait before retrying a snapshot that failed (~0.5 s).
+local RETRY_TICKS = 5
+-- One process, no shell: the batch argument has to stay a single argv element.
+local SNAPSHOT_ARGV = { "hyprctl", "-j", "--batch", "clients;monitors" }
 
 -- One snapshot, shaped per output:
 --
 --   { available, focusedOutput, outputs = { [connector] = { workspace, tabs } } }
 --
--- `focusedOutput` is the fallback for a widget that cannot name its own output,
--- so it degrades to the old follow-the-focus behaviour rather than to nothing.
+-- `focusedOutput` is the *fallback pointer* a strip reads when it cannot name
+-- its own output or when it is explicitly following the focus (scope =
+-- "focused"). It is not a licence to draw another monitor's windows: the widget
+-- falls back only when there is one output in the snapshot and therefore
+-- nothing to get wrong. Kept patched from the event line, so it costs no
+-- subprocess.
 local snapshot = { available = false, focusedOutput = nil, outputs = {} }
 local refreshInFlight = false
-local refreshPending = false
 local dirty = false
+local retryInTicks = 0
 local loggedSnapshotError = false
 
 local function logOnce(message)
@@ -140,9 +154,18 @@ end
 -- (barWidget.outputName(), and DRM connector names in noctalia.outputs()). A
 -- workspace is displayed on exactly one monitor, so the workspace id alone is a
 -- sound join: no window can land in two strips.
-local function buildSnapshot(clientsJson, monitorsJson)
-  local clients = noctalia.json.decode(clientsJson)
-  local monitors = noctalia.json.decode(monitorsJson)
+--
+-- `output` is one `hyprctl -j --batch` run: two JSON documents, the clients array
+-- then the monitors array, separated by a blank line. Neither call is atomic on
+-- its own and the pair has to agree, which is exactly what one batch gives.
+local function buildSnapshot(output)
+  local boundary = string.find(output, BATCH_SEPARATOR, 1, true)
+  if boundary == nil then
+    return nil, "unexpected hyprctl batch output"
+  end
+
+  local clients = noctalia.json.decode(string.sub(output, 1, boundary - 1))
+  local monitors = noctalia.json.decode(string.sub(output, boundary + #BATCH_SEPARATOR))
   if type(clients) ~= "table" or type(monitors) ~= "table" then
     return nil, "invalid Hyprland JSON"
   end
@@ -166,55 +189,46 @@ local function buildSnapshot(clientsJson, monitorsJson)
   return { available = true, focusedOutput = focusedOutput, outputs = outputs }
 end
 
+-- A snapshot that failed is retried, but not on the very next tick: a compositor
+-- that is restarting answers again within a moment, and a dead one should not be
+-- polled at 10 Hz. The event stream re-marks us dirty on its own resync too.
+local function armRetry()
+  dirty = true
+  retryInTicks = RETRY_TICKS
+end
+
 local function refresh()
-  if not available then
-    return
-  end
-  if refreshInFlight then
-    refreshPending = true
+  if not available or refreshInFlight then
     return
   end
   refreshInFlight = true
 
-  local command = "attempt=1; while [ \"$attempt\" -le " .. SNAPSHOT_ATTEMPTS
-    .. " ]; do clients=$(hyprctl -j clients) && monitors=$(hyprctl -j monitors)"
-    .. " && { printf '%s\\n" .. SEPARATOR .. "\\n%s\\n' \"$clients\" \"$monitors\"; exit 0; };"
-    .. " attempt=$((attempt + 1)); [ \"$attempt\" -le " .. SNAPSHOT_ATTEMPTS
-    .. " ] && sleep 1; done; exit 1"
-
-  local started = noctalia.runAsync(command, function(result)
-    if result.exitCode ~= 0 then
-      logOnce("hyprctl failed")
-    else
-      local markerStart, markerEnd = string.find(result.stdout, "\n" .. SEPARATOR .. "\n", 1, true)
-      if not markerStart then
-        logOnce("incomplete hyprctl snapshot")
-      else
-        local built, err = buildSnapshot(
-          string.sub(result.stdout, 1, markerStart - 1),
-          string.sub(result.stdout, markerEnd + 1)
-        )
-        if built == nil then
-          -- Keep the last good state through a transient compositor hiccup.
-          logOnce(`snapshot failed ({err})`)
-        else
-          loggedSnapshotError = false
-          snapshot = built
-          publish()
-        end
-      end
-    end
-
+  local started = noctalia.runAsync(SNAPSHOT_ARGV, function(result)
     refreshInFlight = false
-    if refreshPending then
-      refreshPending = false
-      refresh()
+
+    if result.exitCode ~= 0 or result.timedOut then
+      logOnce("hyprctl failed")
+      armRetry()
+      return
     end
+
+    local built, err = buildSnapshot(result.stdout)
+    if built == nil then
+      -- Keep the last good state through a transient compositor hiccup.
+      logOnce(`snapshot failed ({err})`)
+      armRetry()
+      return
+    end
+
+    loggedSnapshotError = false
+    snapshot = built
+    publish()
   end)
 
   if not started then
     refreshInFlight = false
     logOnce("could not start hyprctl snapshot")
+    armRetry()
   end
 end
 
@@ -443,8 +457,17 @@ end
 
 function update()
   -- The debounce. Bursts (opening a workspace, closing a window with children)
-  -- collapse into a single hyprctl pair at 10 Hz instead of one per event.
-  if dirty and not refreshInFlight then
+  -- collapse into a single hyprctl call at 10 Hz instead of one per event.
+  if refreshInFlight then
+    return
+  end
+  if retryInTicks > 0 then
+    -- The last snapshot failed; wait out the backoff rather than retrying on
+    -- every tick. `dirty` stays set, so the retry happens by itself.
+    retryInTicks -= 1
+    return
+  end
+  if dirty then
     dirty = false
     refresh()
   end

@@ -22,12 +22,12 @@
 -- label that is shorter than it had to be - never as a strip that overflows the
 -- bar.
 --
--- Hover. Revealing controls by inserting them on hover would change the strip's
--- width, re-lay-out the row, and can slide a different tab under a stationary
--- cursor - which flips the hover, which re-lays-out again. So the control slot
--- is always in the layout at a fixed width and only its *contents* change: an
--- inert ui.spacer when idle, buttons when shown. Same width either way, no
--- reflow, and no invisible click targets.
+-- Hover. The controls take their width *out of the title* while they are shown,
+-- so a tab - and every tab after it - is the same width whether or not they are
+-- visible; nothing shifts under a stationary pointer. An idle tab simply spends
+-- the whole slot on a longer title. Inserting the controls on hover is safe
+-- because hover is latched (see onTabHover); without that latch this is exactly
+-- the structure that oscillated.
 --
 -- The hover *tint* is likewise per tab (hover_fill on the hovered one), because
 -- Noctalia's own hover highlight is drawn around the whole widget - it can only
@@ -45,16 +45,22 @@ local ICON_GAP = 4
 -- given, which keeps the whole tab exactly predictable.
 local CONTROL_BUTTON_PAD = 8
 
-local state = noctalia.state.get(STATE_KEY) or { available = false, outputs = {} }
+-- The snapshot the service publishes; anything else reads as "no compositor".
+local function unavailable()
+  return { available = false, outputs = {} }
+end
+
+local state = noctalia.state.get(STATE_KEY) or unavailable()
 local iconCache = {}
 local hoveredAddress = nil
 local requestNonce = 0
 local renderedVertical = nil
+
 -- The connector this instance's bar reported at load. Read once on purpose: the
 -- host hands a bar widget its output in the constructor and has no setter for it
 -- (PluginWidget::ipcOutputName returns a member), so re-deriving it every render
 -- would only ever return the same string - or, after a bar rebuild, a fresh
--- "unknown" that must not silently re-target the strip. See outputEntry().
+-- "unknown" that must not silently re-target the strip. See currentEntry().
 local outputName = barWidget.outputName()
 local warnedNoOutput = false
 -- The signature of what is currently on the bar, so a push that does not change
@@ -64,8 +70,10 @@ local renderedSignature = nil
 -- middle click read it, so it has to be the same list render() drew.
 local tabs = {}
 
-
 local cfg = {}
+-- cfg's keys, sorted once per readConfig() so renderSignature() never has to sort
+-- them on a push.
+local cfgKeys = {}
 
 -- A tab is a capsule, and it should be the same capsule as the clock or the
 -- tray next to it. The bar expresses that as `capsule_thickness`, a fraction of
@@ -74,6 +82,9 @@ local cfg = {}
 -- barWidget.outputName() names the monitor, not the [bar.*] entry - so this
 -- reads the first bar in the order: exact for a single-bar setup, and
 -- overridable with the tab_height setting when it is not.
+--
+-- Called from readConfig, so it resolves once per config change rather than per
+-- render.
 local function resolveTabHeight()
   local configured = math.max(0, tonumber(noctalia.getConfig("tab_height")) or 0)
   if configured > 0 then
@@ -102,7 +113,8 @@ local function readConfig()
   cfg.showControls = noctalia.getConfig("show_controls") or "hover"
   cfg.enableMaximize = noctalia.getConfig("enable_maximize") == true
   cfg.enableClose = noctalia.getConfig("enable_close") == true
-  cfg.tabHeight = math.max(0, tonumber(noctalia.getConfig("tab_height")) or 0)
+  -- tab_height is not stored: resolveTabHeight() reads it directly, and only the
+  -- resolved pixel height is used from here on.
   cfg.tabRadius = math.max(0, tonumber(noctalia.getConfig("tab_radius")) or 8)
   cfg.tabPadding = math.max(0, tonumber(noctalia.getConfig("tab_padding")) or 6)
   cfg.tabGap = math.max(0, tonumber(noctalia.getConfig("tab_gap")) or 4)
@@ -118,6 +130,14 @@ local function readConfig()
   end
 
   cfg.resolvedHeight = resolveTabHeight()
+
+  -- The sorted key list lives with the config: it is what renderSignature()
+  -- walks, and rebuilding it per push would be per-push garbage for no reason.
+  cfgKeys = {}
+  for key in pairs(cfg) do
+    table.insert(cfgKeys, key)
+  end
+  table.sort(cfgKeys)
 end
 
 readConfig()
@@ -281,31 +301,16 @@ local function currentEntry()
 end
 
 -- ── Width budget ────────────────────────────────────────────────────────────
---
--- Fixed cost of one tab, i.e. everything that is not the label.
 
 -- Everything in a tab except the label. Children are laid out with ICON_GAP
 -- between them, so the gaps are part of the cost and are counted here rather
 -- than being quietly absorbed - that omission is exactly what made the first
 -- version overflow its budget.
--- Space the controls need *inside* the label slot. Controls only hide behind a
--- title, so an icon-only tab reserves nothing and simply has no controls.
-local function controlReserve(hasLabel)
-  if not hasLabel then
-    return 0
-  end
-  local slot = controlSlotWidth()
-  if slot == 0 then
-    return 0
-  end
-  return slot + ICON_GAP
-end
-
-local function tabFixedWidth(withIcon, withLabel)
+local function tabFixedWidth(withLabel)
   local parts = 0
   local width = cfg.tabPadding * 2
 
-  if withIcon and cfg.iconSize > 0 then
+  if cfg.iconSize > 0 then
     width += cfg.iconSize
     parts += 1
   end
@@ -313,7 +318,7 @@ local function tabFixedWidth(withIcon, withLabel)
     -- The label slot carries the controls inside itself, so nothing extra is
     -- added here; the reserve is subtracted from the label at render time.
     parts += 1
-  elseif controlSlotWidth() > 0 and not withLabel and cfg.iconSize <= 0 then
+  elseif controlSlotWidth() > 0 and cfg.iconSize <= 0 then
     -- Degenerate case: no icon and no label leaves only the controls.
     width += controlSlotWidth()
     parts += 1
@@ -325,22 +330,35 @@ local function tabFixedWidth(withIcon, withLabel)
   return width
 end
 
+-- Space the controls need *inside* the label slot, gap included. Controls only
+-- hide behind a title, so an icon-only tab reserves nothing and simply has no
+-- controls.
+local function controlReserve()
+  local slot = controlSlotWidth()
+  if slot == 0 then
+    return 0
+  end
+  return slot + ICON_GAP
+end
+
 local function overflowChipWidth(count)
   local text = `+{count}`
   return cfg.tabPadding * 2 + (utf8.len(text) or 2) * charWidth()
 end
 
 -- Returns the render plan: how many tabs to draw, how many pixels each label
--- may take, and whether an overflow chip is needed.
-local function planLayout(tabs)
-  local count = #tabs
+-- may take, and whether an overflow chip is needed. Takes the list as an
+-- argument rather than reading the module's `tabs`, so it stays a pure function
+-- of (list, config).
+local function planLayout(list)
+  local count = #list
   local plan = { visible = count, labelWidth = 0, overflow = 0 }
   if count == 0 then
     return plan
   end
 
   local gaps = (count - 1) * cfg.tabGap
-  local fixed = tabFixedWidth(true, true) * count + gaps
+  local fixed = tabFixedWidth(true) * count + gaps
   local budget = cfg.maxTotalWidth - fixed
 
   -- No reservation: an idle tab spends its entire label slot on the title. The
@@ -363,7 +381,7 @@ local function planLayout(tabs)
   end
 
   -- 3. Labels do not fit at all: icon-only tabs.
-  local iconTab = tabFixedWidth(true, false)
+  local iconTab = tabFixedWidth(false)
   if cfg.iconSize > 0 and iconTab * count + gaps <= cfg.maxTotalWidth then
     plan.labelWidth = 0
     return plan
@@ -522,7 +540,7 @@ local function tabNode(tab, plan, vertical)
 
     local textWidth = plan.labelWidth
     if showControls then
-      textWidth = math.max(0, textWidth - controlReserve(true))
+      textWidth = math.max(0, textWidth - controlReserve())
     end
 
     local weight = cfg.fontWeight > 0 and cfg.fontWeight or (focused and "semibold" or "medium")
@@ -620,24 +638,19 @@ end
 -- entry's tabs, the config, the hover latch and the bar's orientation, so a push
 -- that would build the identical tree is dropped before it reaches the host.
 --
--- The config half iterates cfg itself rather than listing keys, so a new setting
--- cannot be forgotten here; the tab half names the fields tabNode() reads.
-local function renderSignature(vertical)
-  local entry = currentEntry()
+-- The config half walks cfgKeys (sorted in readConfig) rather than cfg itself,
+-- so a new setting cannot be forgotten here and no sort happens per push.
+local function renderSignature(entry, vertical)
   if entry == nil or (cfg.hideWhenEmpty and #(entry.tabs or {}) == 0) then
     return "hidden"
   end
 
   local parts = { vertical and "vertical" or "horizontal", tostring(hoveredAddress) }
-  local keys = {}
-  for key in pairs(cfg) do
-    table.insert(keys, key)
-  end
-  table.sort(keys)
-  for _, key in ipairs(keys) do
+  for _, key in ipairs(cfgKeys) do
     table.insert(parts, `{key}={cfg[key]}`)
   end
   for _, tab in ipairs(entry.tabs) do
+    -- The fields tabNode() reads. Keep in step with it.
     table.insert(parts, `{tab.address}|{tab.title}|{tab.class}|{tab.focused}|{tab.fullscreen}`)
   end
   return table.concat(parts, "\n")
@@ -652,7 +665,7 @@ function render(vertical)
   local entry = currentEntry()
   tabs = (entry ~= nil and entry.tabs) or {}
 
-  local signature = renderSignature(vertical)
+  local signature = renderSignature(entry, vertical)
   if signature == renderedSignature then
     return
   end
@@ -723,7 +736,7 @@ function onConfigChanged()
 end
 
 noctalia.state.watch(STATE_KEY, function(value)
-  state = type(value) == "table" and value or { available = false, outputs = {} }
+  state = type(value) == "table" and value or unavailable()
   render(renderedVertical)
 end)
 
